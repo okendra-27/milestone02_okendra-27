@@ -1,0 +1,17 @@
+# M2 Technical & Design Understanding
+
+## 1. Polymorphism and dynamic dispatch
+
+`ProcessingCore::rebuild` calls `impl_->chunking->chunk(doc, order)`. The member's static type is `std::unique_ptr<ChunkingStrategy>`, while the default constructor installs a `Chunker` and the configurable constructor can install a student-defined subclass. Since `ChunkingStrategy::chunk` is pure virtual, the call dispatches to the runtime object's override. `ProcessingCore::search` and `build_context` use the same pattern with `RetrievalStrategy::search` and `ContextStrategy::build`; the default runtime implementations are `RetrievalEngine` and `ContextBuilder`. If the operations were not virtual, a base-interface call could not dispatch to the derived implementation, so injected strategies would not provide their promised behavior.
+
+## 2. Ownership and lifetime
+
+The caller may create strategies with `std::make_unique` and pass them to the three-argument `ProcessingCore` constructor. That constructor checks all three pointers, then moves them into `ProcessingCore::Impl`, whose members are `std::unique_ptr<ChunkingStrategy>`, `std::unique_ptr<RetrievalStrategy>`, and `std::unique_ptr<ContextStrategy>`. After the move, the core exclusively owns each strategy. They are destroyed automatically when the `Impl` is destroyed, including during destruction or replacement through `ProcessingCore` move assignment. The core is move-only because copying would require duplicating exclusive strategy ownership; its declared move operations transfer the `impl_` pointer instead. Each interface has a virtual destructor so deleting a derived strategy through its base pointer runs the derived destructor correctly.
+
+## 3. Architecture, extensibility, and M1 compatibility
+
+`ProcessingCore::Impl` composes capabilities through the three strategy interfaces. The default constructor delegates to the configurable constructor with `Chunker(ChunkingPolicy{kMaxChunkTokens, kChunkOverlap, kParagraphPreferenceWindow})`, `RetrievalEngine`, and `ContextBuilder`. Thus the M1 algorithms and default policy remain active while the core routes work through interfaces. A caller can substitute a derived strategy by passing it to the same three-argument constructor; the ordinary `rebuild`, `search`, and `build_context` API does not change. An alternative would be to make `ProcessingCore` itself implement every algorithm selection with conditional branches or template parameters. That couples orchestration to concrete choices and makes the same runtime API harder to compose with independently defined strategies; the interface members keep algorithm choices at construction and delegation boundaries.
+
+## 4. Testing and defect reasoning
+
+In `tests/student_tests.cpp`, `MarkerChunker`, `FixedRetriever`, and `FixedContext` are injected together. The test checks that rebuild stores `alpha#marker`, an unrelated query still returns score `42.0`, and context contains `injected context`. Those outcomes would fail if `ProcessingCore` declared interfaces but continued calling its concrete M1 components. The test also checks that a null strategy throws, that a moved core retains its strategy and corpus, and that a duplicate-ID rebuild throws while the previous marker chunks and retrieval behavior remain. The default-path assertions cover normalization, chunk count, retrieval, and budgeted context so the architectural refactor is checked against M1 behavior in addition to the supplied public tests.
